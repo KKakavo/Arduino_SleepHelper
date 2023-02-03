@@ -27,14 +27,14 @@
 #define DB_ID 8
 
 #define LED_COUNT 4
-#define TEMPERATURE_LIMIT_TOP 20
-#define TEMPERATURE_LIMIT_BOT 15
+#define TEMPERATURE_LIMIT_TOP 23
+#define TEMPERATURE_LIMIT_BOT 13
 #define LIGHT_LIMIT 20
 #define CARBON_DIOXIDE_LIMIT 1000
 #define HUMIDITY_LIMIT_BOT 40
 #define HUMIDITY_LIMIT_TOP 60
 #define POTMIN 90
-#define POTMAX 950
+#define POTMAX 900
 #define EEPROMAWAKEPOS 0
 #define EEPROMSLEEPPOS 4
 
@@ -157,10 +157,14 @@ void setup(){
   FastLED.addLeds<WS2812B, LEDPIN, GRB>(strip, LED_COUNT).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(255);
   pinMode(BUTPIN,INPUT_PULLUP);
-  attachInterrupt(0,butPressed,FALLING);
   pinMode(MQPIN, INPUT);
   pinMode(POTPIN, INPUT);
   pinMode(PIEZOPIN,OUTPUT);
+  LCD.clear();
+  LCD.setCursor(0, 0);
+  LCD.print("MQ is heating");
+  LCD.backlight();
+  delay(600);
   LCD.createChar(T_ID, temperatureChar);
   LCD.createChar(S_ID, noiseChar);
   LCD.createChar(L_ID, lightChar);
@@ -168,7 +172,6 @@ void setup(){
   LCD.createChar(H_ID, humidityChar);
   LCD.createChar(GC_ID, celsDegreesChar);
   LCD.createChar(PPM_ID, ppmChar);
-  LCD.backlight();  // включение подсветки дисплея
    if (! rtc.begin()) {
     Serial.println("Couldn't find RTC");
   }
@@ -178,48 +181,52 @@ void setup(){
     EEPROM.get(EEPROMSLEEPPOS,sleepTime);
 }
 bool tIsOn = true, hIsOn = true, lIsOn = true, cdIsOn = true;
+bool isTime = false;
 float temperature;
 int humidity;
 int carbDiox;
 int light;
 int potData;
 int curScene = MENU_SCENE;
-bool butFlag = false;
-int time[2];
+bool isPressed = false;
+int time[2] = {0,0};
 int timePos = 0;
-volatile bool flag = true;
 DateTime currentTime;
+DateTime prevTime;
 
 void loop() {
-  getData();
+  timer();
+  getPotData();
+  if(isTime){
+    getData();
+    log();
+  }
   LEDwrite();
-  log();
   timeToSW();
   showScene(curScene);
 }
-
-
+void getPotData(){
+  potData = analogRead(POTPIN);
+}
 void getData() {
-  currentTime = rtc.now();
   sensorLight.read();
   light = sensorLight.getLightLux();
   temperature = dht.readTemperature();
   humidity = dht.readHumidity();
   carbDiox = MQ.getCorrectedPPM(temperature, humidity);
-  potData = analogRead(POTPIN);
+  //carbDiox = MQ.getCorrectedRZero(temperature, humidity);
 }
 
 void LEDwrite() {
   if(temperature < TEMPERATURE_LIMIT_BOT && tIsOn)
     for (int i = 0; i < LED_COUNT; i += 4)
       strip[i] = CRGB::DarkBlue;  // Синий цвет
-  else if(temperature > TEMPERATURE_LIMIT_TOP)
+  else if(temperature > TEMPERATURE_LIMIT_TOP && tIsOn)
     for (int i = 0; i < LED_COUNT; i += 4)
       strip[i] = CRGB::DarkRed;  // Красный цвет
   else
     for (int i = 0; i < LED_COUNT; i += 4)
      strip[i] = CRGB::Black;  // Выключение
-
 
   if(light > LIGHT_LIMIT && lIsOn)
     for (int i = 1; i < LED_COUNT; i += 4)
@@ -238,7 +245,7 @@ void LEDwrite() {
   if(humidity > HUMIDITY_LIMIT_TOP && hIsOn)
     for (int i = 2; i < LED_COUNT; i += 4)
       strip[i] = CRGB::Teal;  // Бирюзовый цвет
-  if(humidity < HUMIDITY_LIMIT_BOT && hIsOn)
+  else if(humidity < HUMIDITY_LIMIT_BOT && hIsOn)
     for (int i = 2; i < LED_COUNT; i += 4)
       strip[i] = CRGB::Orange;  // Жёлтый цвет
   else
@@ -297,21 +304,21 @@ void musicAwakeSetup(){
   LCD.noCursor();
   LCD.setCursor(0,0);
   LCD.print("Time to wake up!");
-  flag = true;
 }
 void musicAwake(){
-  while(flag == true){
+  while(!isPressed){
   for(int i = 0; i < 39;i++){
     tone(PIEZOPIN, notesAwake[i], timesAwake[i]*2);
     delay(timesAwake[i]*2);
     noTone(PIEZOPIN);
-    Serial.println(flag);
-    if(flag == false)
+    if(!digitalRead(BUTPIN))
+      isPressed = true;
+    else if(isPressed)
       break;
   }
   }
-  curScene = 0;
-  flag = true;
+  changeScene(MENU_SCENE);
+  isPressed = false;
 }
  
 void musicSleepSetup(){
@@ -319,20 +326,21 @@ void musicSleepSetup(){
   LCD.noCursor();
   LCD.setCursor(0,0);
   LCD.print("Time to sleep!");
-  flag = true;
 }
 void musicSleep(){
-  while(flag == true){
+  while(!isPressed){
   for(int i = 0; i < 31;i++){
     tone(PIEZOPIN, noteSleep[i], 1000 / timesSleep[i]);
     delay(1000/timesSleep[i]*1.8);
     noTone(PIEZOPIN);
-    if(flag == false)
+    if(!digitalRead(BUTPIN))
+      isPressed = true;
+    else if(isPressed)
       break;
   }
   }
-  curScene = 0;
-  flag = true;
+  changeScene(MENU_SCENE);
+  isPressed = false;
 }
 
 void showScene(int scene){
@@ -379,29 +387,30 @@ void dispClear() {
     LCD.setCursor(i, 1);
     LCD.print(" ");
   }
-  for(int i = 11 + (log10(light) + 1); i <=15;i++){
+  for(int i = 11 + (log10(light) + 1); i <=14;i++){
     LCD.setCursor(i, 0);
     LCD.print(" ");
   }
 }
 void chooseIconMenu(){
   int menuPos = map(potData,POTMIN,POTMAX,0,5);
+  LCD.setCursor(15,0);
   if(menuPos == 0)
-    LCD.setCursor(0,0);
+    LCD.write(T_ID);
   else if(menuPos == 1)
-    LCD.setCursor(8,0);
+    LCD.write(L_ID);
   else if(menuPos == 2)
-    LCD.setCursor(0,1);
+    LCD.write(CD_ID);
   else if(menuPos == 3)
-    LCD.setCursor(8,1);
+    LCD.write(H_ID);
   else if(menuPos == 4)
-    LCD.setCursor(13,1);
+    LCD.print("S");
   else if(menuPos == 5)
-    LCD.setCursor(15,1);
+    LCD.print("W");
   
   if(!digitalRead(BUTPIN))
-    butFlag = true;
-  else if(butFlag == true){
+    isPressed = true;
+  else if(isPressed){
     if(menuPos == 0)
       tIsOn = !tIsOn;
     else if(menuPos == 1)
@@ -410,15 +419,12 @@ void chooseIconMenu(){
       cdIsOn = !cdIsOn;
     else if(menuPos == 3)
       hIsOn = !hIsOn;
-    else if(menuPos == 4){
+    else if(menuPos == 4)
       changeScene(SLEEP_SCENE);
-    }
-    else if(menuPos == 5){
+    else if(menuPos == 5)
       changeScene(AWAKE_SCENE);
-    }
-    butFlag = false;
+    isPressed = false;
   }
-  Serial.println(menuPos);
 }
 void dispShowSleep(){
   if(timePos == 0){
@@ -444,8 +450,8 @@ void dispShowSleep(){
   else
     LCD.print(time[timePos]);
   if(!digitalRead(BUTPIN))
-    butFlag = true;
-  else if(butFlag == true){
+    isPressed = true;
+  else if(isPressed == true){
     timePos++;
     if(timePos == 2){
       sleepTime[0] = time[0];
@@ -453,7 +459,7 @@ void dispShowSleep(){
       EEPROM.put(EEPROMSLEEPPOS,sleepTime);
       changeScene(MENU_SCENE);
     }
-    butFlag = false;
+    isPressed = false;
   }
 }
 void dispShowAwake(){
@@ -480,8 +486,8 @@ void dispShowAwake(){
   else
     LCD.print(time[timePos]);
   if(!digitalRead(BUTPIN))
-    butFlag = true;
-  else if(butFlag == true){
+    isPressed = true;
+  else if(isPressed == true){
     timePos++;
     if(timePos == 2){
       awakeTime[0] = time[0];
@@ -489,7 +495,7 @@ void dispShowAwake(){
       EEPROM.put(EEPROMAWAKEPOS,awakeTime);
       changeScene(MENU_SCENE);
     }
-    butFlag = false;
+    isPressed = false;
   }
 }
 void changeScene(int scene){
@@ -509,7 +515,7 @@ void changeScene(int scene){
 }
 void dispShowMenuSetup(){
   LCD.clear();
-  LCD.cursor();
+  LCD.noCursor();
   LCD.setCursor(0, 0);
   LCD.write(T_ID);
   LCD.setCursor(8, 1);
@@ -539,6 +545,12 @@ void dispShowAwakeSetup(){
   LCD.setCursor(0,1);
   LCD.print("00:00");
 }
-void butPressed(){
-  flag = false;
+void timer(){
+  currentTime = rtc.now();
+  if(abs(currentTime.second() - prevTime.second()) >= 5){
+    prevTime = currentTime;
+    isTime = true;
+  }
+  else
+    isTime = false;
 }
